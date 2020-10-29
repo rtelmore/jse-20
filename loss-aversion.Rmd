@@ -1,0 +1,869 @@
+---
+title: 'Loss Aversion in Professional Golf'
+author: | 
+  | Ryan Elmore$^1$
+  | Ryan.Elmore@du.edu
+  | *Daniels College of Business*
+  | *Department of Business Information and Analytics*
+  | *University of Denver*
+  |
+  | Andrew Urbaczewski
+  | andrew.urbaczewski@du.edu
+  | *Department of Management*
+  | *United States Air Force Academy* 
+  | and
+  | *Daniels College of Business*
+  | *Department of Business Information and Analytics*
+  | *University of Denver*
+bibliography: references.bib
+biblio-style: chicago
+fontsize: 12pt
+header-includes:
+    - \usepackage{setspace}\setstretch{1.5}
+output: 
+  bookdown::pdf_document2:
+    citation_package: natbib
+    highlight: tango
+    fig_caption: yes
+    number_sections: true
+    latex_engine: pdflatex
+    keep_tex: true
+    toc: false
+---
+\let\thefootnote\relax\footnote{1 - To whom correspondence should be addressed.}
+\let\thefootnote\relax\footnote{The views expressed in this article are those of the authors and do not necessarily reflect the official policy or position of the United States Air Force Academy, Air Force, Department of Defense, or the US Government.}
+\newpage
+<!-- \linenumbers -->
+<!-- date: "\\newpage" -->
+
+
+```{r r-packages, include = F}
+library(knitr)
+library(tidyverse)
+library(janitor)
+library(readxl)
+library(lme4)
+library(broom)
+library(kableExtra)
+library(Rmisc)
+library(multcomp)
+options(scipen=999)
+set.seed(92302)
+```
+
+```{r knitr-options, include = FALSE}
+opts_chunk$set(fig.path = "fig/",
+               fig.width = 6,
+               fig.height = 5,
+               fig.lp = "fig:",
+               fig.keep="high",
+               fig.show="hold",
+               fig.align="center",
+               echo = FALSE, 
+               warning = FALSE, 
+               message = FALSE,
+               comment = NA)
+```
+
+```{r data, include = FALSE, cache = TRUE}
+df <- read_csv("data/us-open.csv") %>%
+  clean_names() %>%
+  bind_rows(read_csv("data/us-open-2019-long.csv"))
+df_par <- read_csv("data/par-by-hole.csv")
+
+df_red <- df %>%
+  dplyr::group_by(year, hole_number) %>%
+  dplyr::summarize(avg = mean(sum_of_strokes)) %>%
+  dplyr::left_join(df_par, by = c("year", "hole_number")) %>%
+  dplyr::mutate(diff = avg - par)
+
+df_oak <- read_excel("data/us-open-oakmont.xlsx") %>%
+  clean_names()
+names(df_oak)[1] <- "year"
+df_par_oak <- read_csv("data/par-by-hole-oakmont.csv")
+
+df_oak <- filter(df_oak, year >= 1970)
+df_red_oak <- df_oak %>%
+  dplyr::group_by(year, hole_number) %>%
+  dplyr::summarize(avg = mean(sum_of_strokes)) %>%
+  dplyr::left_join(df_par_oak, by = c("year", "hole_number")) %>%
+  dplyr::mutate(diff = avg - par)
+
+reg_df <- bind_rows(
+  readRDS("data/regression-full-df-oakmont.rds") %>%
+    mutate(full_rounds = if_else(total_rounds == 4, TRUE, FALSE),
+           year_ind = if_else(year < 2007, TRUE, FALSE),
+           year_player = paste(player, ":", year),
+           location = "Oakmont") %>%
+    left_join(df_par_oak),
+  readRDS("data/regression-full-df.rds") %>%
+    mutate(full_rounds = if_else(total_rounds == 4, TRUE, FALSE),
+           year_ind = if_else(year < 2000, TRUE, FALSE),
+           year_player = paste(player, ":", year),
+           location = "Pebble") %>%
+    left_join(df_par)) %>%
+  filter(round_number <= 4)
+
+reg_df <- filter(reg_df, round_number <= 4)
+
+df_red_tot <- bind_rows(
+  dplyr::filter(reg_df, location == "Pebble", hole_number == 2),
+  dplyr::filter(reg_df, location == "Oakmont", hole_number == 9)) %>%
+  dplyr::group_by(year, round_number, location) %>%
+  dplyr::summarize(avg = mean(sum_of_strokes)) %>%
+  dplyr::filter(round_number < 5) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(col = if_else(year < 2000, 1, 0))
+
+df_hole_avg <- df %>%
+  dplyr::group_by(year, hole_number) %>%
+  dplyr::summarize(avg = mean(sum_of_strokes)) %>%
+  dplyr::mutate(course = "Pebble") %>%
+  dplyr::ungroup() %>%
+  dplyr::bind_rows(filter(df_oak, year >= 1970) %>%
+                     dplyr::group_by(year, hole_number) %>%
+                     dplyr::summarize(avg = mean(sum_of_strokes)) %>%
+                     dplyr::mutate(course = "Oakmont") %>%
+                     dplyr::ungroup()) %>%
+  dplyr::mutate(hole = factor(hole_number,
+                              labels = c("hole 1", "hole 2", "hole 3", "hole 4",
+                                         "hole 5", "hole 6", "hole 7", "hole 8",
+                                         "hole 9", "hole 10", "hole 11", "hole 12",
+                                         "hole 13", "hole 14", "hole 15", "hole 16",
+                                         "hole 17", "hole 18")))
+```
+
+
+```{r reg-mods, cache = TRUE}
+peb_reg_df <- filter(reg_df, 
+                     location == "Pebble",
+                     year %in% c(1992, 2000)) %>% 
+  mutate(hole_number = as.factor(hole_number))
+lm_pebble <- lm(sum_of_strokes ~ hole_number*year_ind, 
+                data = peb_reg_df)
+
+oak_reg_df <- filter(reg_df, 
+                     location == "Oakmont", 
+                     year %in% c(1994, 2007)) %>%
+  mutate(hole_number = as.factor(hole_number),
+         hole_number = relevel(hole_number, ref = 9))
+  
+lm_oakmont <- lm(sum_of_strokes ~ hole_number*year_ind,
+                 data = oak_reg_df)
+```
+
+```{r, include = FALSE, cache = TRUE}
+res <- summarySE(peb_reg_df, 
+                 measurevar = "sum_of_strokes", 
+                 groupvars = c("hole_number", "year_ind"))
+res_oak <- summarySE(oak_reg_df, 
+                     measurevar = "sum_of_strokes", 
+                     groupvars = c("hole_number", "year_ind"))
+
+K <- matrix(c(rep(0, 18), 1, rep(0, 17),
+              rep(0, 18), 1, 1, rep(0, 16),
+              rep(0, 18), 1, 0, 1, rep(0, 15),
+              rep(0, 18), 1, rep(0, 2), 1, rep(0, 14),
+              rep(0, 18), 1, rep(0, 3), 1, rep(0, 13),
+              rep(0, 18), 1, rep(0, 4), 1, rep(0, 12),
+              rep(0, 18), 1, rep(0, 5), 1, rep(0, 11),
+              rep(0, 18), 1, rep(0, 6), 1, rep(0, 10),
+              rep(0, 18), 1, rep(0, 7), 1, rep(0, 9),
+              rep(0, 18), 1, rep(0, 8), 1, rep(0, 8),
+              rep(0, 18), 1, rep(0, 9), 1, rep(0, 7),
+              rep(0, 18), 1, rep(0, 10), 1, rep(0, 6),
+              rep(0, 18), 1, rep(0, 11), 1, rep(0, 5),
+              rep(0, 18), 1, rep(0, 12), 1, rep(0, 4),
+              rep(0, 18), 1, rep(0, 13), 1, rep(0, 3),
+              rep(0, 18), 1, rep(0, 14), 1, rep(0, 2),
+              rep(0, 18), 1, rep(0, 15), 1, rep(0, 1),
+              rep(0, 18), 1, rep(0, 16), 1),
+              nr = 18, byrow = T)
+
+### set up general linear hypothesis
+pebble_glht <- glht(lm_pebble, linfct = K)
+pebble_glht_sum <- summary(pebble_glht)$test 
+pebble_glht_df <- tibble(hole = 1:18,
+                         coef = pebble_glht_sum$coefficients,
+                         sigma = pebble_glht_sum$sigma) %>% 
+  mutate(., lower = coef - 2*sigma, upper = coef + 2*sigma) %>% 
+  inner_join(., filter(df_par, year == 2000),
+             by = c("hole" = "hole_number"))
+pebble_glht_df$par[2] <- "4/5"
+
+oakmont_glht <- glht(lm_oakmont, linfct = K)
+summary(oakmont_glht)
+
+### set up general linear hypothesis
+oakmont_glht <- glht(lm_oakmont, linfct = K)
+oakmont_glht_sum <- summary(oakmont_glht)$test 
+oakmont_glht_df <- tibble(hole = 1:18,
+                         coef = oakmont_glht_sum$coefficients,
+                         sigma = oakmont_glht_sum$sigma) %>% 
+  mutate(., lower = coef - 2*sigma, upper = coef + 2*sigma) %>% 
+  inner_join(., filter(df_par_oak, year == 2007),
+             by = c("hole" = "hole_number"))
+oakmont_glht_df$par[9] <- "4/5"
+```
+
+\begin{center} 
+\large
+\textbf{Abstract}
+\end{center}
+\normalsize
+
+\begin{quote}
+  We examine loss aversion in the context of professional golf at US Open tournaments. In particular, we analyze data from two courses, Pebble Beach Golf Links and Oakmont Country Club, where they have hosted six and five US Opens, respectively. The United States Golf Association changed the par rating of a hole on each course from a par 5 to a par 4, without fundamentally altering the hole, in each US Open hosted by these courses since 2000. In this natural experimental setting, we find evidence of significant loss-aversive behavior in the world’s best golfers based solely on par rating.
+\end{quote}
+
+**Keywords:** Loss Aversion, Prospect Theory, Golf Analytics
+
+\setlength\parindent{20pt}
+
+\newpage 
+
+# Introduction
+
+Loss aversion is a frequent topic of investigation in behavioral economics.  As made
+famous by @kahneman1979prospect in their work on prospect theory, loss
+aversion states that people tend to value something they already have at above
+the level that others would value it. This has been studied in both the lab
+[@knetsch1989endowment; @kahneman1990experimental; @novemsky2005boundaries]
+as well as in the field [@novemsky2005boundaries; @fehr2007workers;
+@fryer2012enhancing]. The effect of loss aversion is strong, where
+@putler1992incorporating estimated that someone would have to offer a gain of
+approximately 2 - 2.5 times the value of the loss for someone to engage in a
+risky endeavor. Loss aversion is not unique to western societies, as it has been
+tested in several countries [@tanaka2010risk]. @camerer2005three even suggests
+that loss aversion may not be a judgment error but rather a reaction to fear,
+which can be a fear of failure or a temporary transitive state while moving from
+one setting to another.
+
+Loss aversion has been studied in many contexts in the field. Several of them
+include investing, teaching, and retail consumer shopping [@sokol2009thinking].
+Here we study it in the context of sports, and specifically golf. In sports, there are many famous examples of coaches and players exhibiting
+loss-averse behavior.  This would include coaches using non-optimal kicking
+strategies in American football [@romer2002s; @urschel2011nfl], teams
+playing for a draw instead of a win in soccer [@riedl2015three],
+and baseball team construction [@pedace2013loss].  Loss aversion is seen
+as applying even in sports as a way to explain the behavior of individuals in
+the context of a game, just as others might in a purchasing decision.
+
+Golf has also been studied as a context for loss aversion. In their 2011
+*American Economic Review* paper, @pope2011tiger famously ask the question “Is 
+Tiger Woods Loss Averse?” They study not just Tiger Woods, but multiple PGA Tour
+players' putting statistics and find evidence of loss aversion amongst the 
+best golfers in the world. They used multiple pieces of evidence, such as 
+aggression and putts made, to show that golfers are more likely to protect par 
+(the number of strokes that an average highly-skilled player should take to 
+complete a hole) than they are to make birdies (a score of one less than par). 
+In addition to loss aversion, the economic theory of superstar effects 
+in golf was the subject of investigations by @brown2011quitters and 
+@babington2020tournaments.
+
+The concept of par, as explained above, is a semi-arbitrary measure designed to
+inform a golfer of the number of strokes expected to play the hole.  It is
+usually defined as the number of strokes it should take a golfer to reach the
+putting surface (the green), plus two putts.  In general, holes of 250 yards or
+less in length are defined as par 3s, 300-500 yards are defined as par 4s, and
+holes greater than 500 yards are par 5s.  Holes tend to not be defined in the
+250-300 yard range, but when they do they may be labeled as Par 3s or Par 4s.
+Similarly, as equipment has improved and players are becoming more skilled, some
+holes that are longer than 500 yards are labeled as par 4s.  In the end,
+however, professional golf tournaments are played by players against each other,
+and not against the course or the (somewhat) arbitrary par rating.  In some 
+tournaments, the winning score over 72 holes might be 25 strokes or more under 
+par, while in others it might be above par.
+
+We posit, however, that there is a psychological effect on the golfer created by
+labeling a hole as a par 3, 4, or 5. Though par labeling does nothing to
+change the rules of the game, as stroke play tournaments are settled by
+seeing who completes 72 holes in the fewest number of strokes, individuals might
+think of holes as “tough par 4s”, or “easy par 5s”. Amongst lesser skilled
+golfers, a long par 3 might put a mandate in the player’s brain that (s)he has
+to reach the green with the tee shot, though in reality the player would be much
+better served purposely attempting a shot that would not reach the green 
+("laying up") and, thereby, setting up the player for a higher likelihood of a 
+lower total score on that hole. We propose this effect is found not only in 
+lesser-skilled golfers, but also in those of the highest level of skill. The par
+rating can be thought of as a reference point, a concept examined in 
+@tversky1991loss.
+
+The United States Golf Association (USGA) is the ruling body of golf throughout
+the USA.  Part of their mandate is to conduct national championships, the most
+famous of which is the men’s US Open. This 72-hole tournament is often known as
+the toughest test of golf and rotates annually to some of the most famous golf
+courses in the country. One hundred and fifty six golfers start the tournament
+each year, with the field size cut by about half after two rounds. The winning
+score at the US Open is often over par, and only four times in its history has
+it been more than ten strokes under par.
+
+Examining the golf courses used for past US Opens, we are presented with a
+unique natural experiment. There are instances in which the same hole has been
+rated as a par 5 in some US Opens and as a par 4 in others. In most situations,
+this is due to architectural changes to the course, such as adding new tee boxes
+to lengthen or shorten the holes. However, in other cases the change appears to
+have been made for no other reason than attempt to “protect par”, or to not have
+the winner be "too many" strokes under par and, thus, contributing to the US
+Open's reputation as the toughest golf tournament.  We see this at two
+courses in particular: Pebble Beach Golf Links (Pebble Beach) and Oakmont
+Country Club (Oakmont).
+
+Pebble Beach has hosted the US Open six times in the past, with the most recent
+being in June 2019.  The first three times it hosted the US Open (1972,
+1982, 1992), the 502-yard second hole was rated as a par 5. In 2000 (the year
+Tiger Woods was the only player under par and won by a record 15 strokes), in
+2010, and again in 2019, the same hole played as a par 4 with only minor changes
+to its length to accommodate normal movement of the tee markers and flag that 
+would happen with any other hole. Similarly, Oakmont has hosted the US Open nine
+times. The first seven times, from 1927 to 1983, the ninth hole was played as a 
+par 5.  In 2007 and 2016, it was played as a par 4.  During these nine 
+tournaments, the hole was listed at a relatively consistent length of 475 - 488 
+yards. If prospect theory holds, the players should concentrate more on playing 
+the hole in four strokes (par) when it is classified as a par 4 rather than a 
+par 5, and as such should score better when it is labeled as a par 4. This 
+assertion is the motivation for our current work presented here.
+
+This remainder of this paper is outlined as follows. We describe our data and
+research hypothesis in Section 2. The statistical methods and results are
+presented in Sections 3 and 4, respectively. Finally, we present our concluding
+remarks and future research directions in Section 5.
+
+# Data and Research Hypothesis
+
+The USGA provided data to the authors on every course that had been used multiple
+times for a US Open and specific information on any holes in which the par 
+rating had changed. They also provided us with the score that every golfer 
+recorded on every hole in those US Open tournaments. 
+
+
+For the purposes of this analysis, we restrict our attention to four US 
+Opens: 1992 and 2000 at Pebble Beach Golf Links and 1994 and 2007 at Oakmont 
+Country Club. The earlier dates, 1992 and 1994, are the last US Open tournaments 
+played with hole number two at Pebble Beach and hole nine at Oakmont were rated 
+as a par 5. The holes were both changed to a par 4 in subsequent tournaments. 
+The resulting data set contains 31,710 unique hole scores across the four US Opens.
+A total of 156 golfers participated in the 1992, 2000, and 2007 US Opens, and 
+158 golfers played in the 1994 tournament at Oakmont. Forty-six golfers played
+in both tournaments at Pebble Beach whereas only 14 played in both at Oakmont.
+
+```{r, include = FALSE}
+oak_reg_df %>% 
+  dplyr::group_by(., year) %>% 
+  dplyr::summarize(n = n_distinct(player))
+```
+
+A preliminary analysis of the data led us to believe that there was indeed
+better absolute performance when holes were rated as par 4s instead of par 5s
+and thus a possible instance of loss-aversive behavior. This preliminary
+analysis can be seen graphically in Figures \@ref(fig:bar-charts-pb) and
+\@ref(fig:bar-charts-oakmont) which show the distribution of scores across holes two
+and nine at Pebble Beach and Oakmont, respectively. It is immediately obvious
+that more threes and fours are recorded when holes are rated as par 4s
+rather than as a par 5. On the other hand, more
+fives and sixes are observed when both holes are rated as a par 5 than when the
+same hole was rated a par 4.
+
+<!-- In addition, the average scores (by round) for those two holes in each US Open -->
+<!-- tournament played at Pebble Beach and Oakmont are given in Figure  -->
+<!-- \@ref(fig:avg-scores-round).  -->
+Figures \@ref(fig:bar-charts-pb) and \@ref(fig:bar-charts-oakmont) suggest that 
+players may be trying harder when playing to avoid losing a stroke (on par 4s) 
+rather than when they are playing simply to maintain their current score (on 
+par 5s). Indeed, Jordan Spieth, a three-time major winnner and former number one 
+ranked golfer in the world said in his 2019 U.S. Open pre-tournament (coincidentally 
+held at Pebble Beach Golf Links) press conference, "Obviously par doesn't really 
+matter, but it's nice when you feel like 'Oh, I have to lay up, but I can still 
+hit a wedge and get a birdie putt,' instead of, 'Oh, man, I don't want to make a
+bogey'" [@costa)]. We investigate this anecdote in a statistically rigorous 
+manner in thefollowing section by carefully examining our principal research 
+hypothesis stated below.
+
+**Hypothesis 1 (H1)**: *A professional golfer will tend to score lower on a hole
+rated as a par 4 than when the equivalent hole is rated as a par 5.*
+
+<!-- In addition, we anticipate that any potential loss aversive affect will likely  -->
+<!-- diminish over time. That is, the largest affect should appear in the US Open -->
+<!-- immediately after making the change and will decrease in subsequent tournaments at  -->
+<!-- that venue. While this effect could be due to many reasons, we posit that as the  -->
+<!-- change to par becomes further ingrained into the psyche as the normal course of  -->
+<!-- events, and less players are available to remember the hole being labeled as a par 5  -->
+<!-- as they retire or are no longer skillful enough to compete at the highest level, the  -->
+<!-- more that anchoring and adjustment effects [@tversky1974judgment] will  -->
+<!-- become more significant than any loss-aversive effects. This leads to our ancillary  -->
+<!-- hypothesis. -->
+
+<!-- **Hypothesis 2 (H2)**: *The effect size due to loss aversion will diminish  -->
+<!-- after the first tournament following a change from a par 5 to a par 4 rating.* -->
+
+<!-- In order to investigate our hypothesis, we use the raw scores from US Opens -->
+<!-- hosted by Pebble Beach in 1992 and 2000, and Oakmont in 1994 and 2007.  -->
+
+The uniqueness of this scenario in the context of a natural experiment
+on loss aversion should not be understated. @levitt2008homo remark that "Perhaps
+the greatest challenge facing behavioral economics is demonstrating its
+applicability in the real world." By changing the par rating on two holes in the
+US Opens at Pebble Beach and Oakmont while not fundamentally changing how each
+hole is played, the tournament organizers have effectively created a natural
+experiment that we can use to answer if professional golfers behave in a loss
+averse fashion.
+
+# Statistical Methods
+
+In order to assess whether or not the differences observed in Section 2 are
+meaningful in a statistical sense, we need to develop an appropriate model. To
+this end, we present the following model as the basis of our analysis. In its
+most general form, we are simply using an unbalanced two-way layout with 
+non-additive effects, see for example Chapter 23 in @kutner2005.
+Note, however, 
+that we model the possible loss averse effect on each course independently 
+using two separate, but consistent, models. This is done (primarily) to ensure 
+parsimonious interpretations of effects, if they are present.
+
+The statistical model for course $m \in \{ \textrm{Pebble Beach, Oakmont}\}$ 
+is written as
+\begin{equation}
+  Y_{ijk}^{(m)} = \mu_{\cdot\cdot}^{(m)} + \alpha_i^{(m)} + \beta_j^{(m)} + (\alpha\beta)^{(m)}_{ij} + \varepsilon^{(m)}_{ijk},
+  (\#eq:statmod)
+\end{equation}
+for $i = 1, 2, \dots, 18$ (holes), $j = 1, 2$ (before or 
+after changing par), and  $k = 1, 2, \dots, n_{ij}$. Note that $j = 1$ and 2 at 
+Pebble Beach refer to the years 1992 and 2000, respectively. Similarly, $j = 1$ 
+and 2 at Oakmont represent 1994 and 2007, respectively. In order to simplify the
+notation, we omit the superscript $m$ in the remainder of the paper as it is 
+understood that each course supports different parameters and parameter 
+estimates. A summary of the model and its terms is given next.
+
+1. The $\mu_{\cdot\cdot}$ parameter is the overall mean.
+2. The $\alpha_i$ values represent the main effects (on each
+course) related to the tournaments before and after they changed par on hole 
+two at Pebble Beach and hole nine at Oakmont.
+2. The $\beta_j$ values are main effects for the individual 
+holes on each course.
+3. Finally, the year by hole interaction terms are defined 
+by $(\alpha\beta)_{ij}$.
+4. Our primary interest is in testing if the expected change 
+in scores on hole two at Pebble Beach is significantly *less* than zero, 
+before and after the change in the hole's par rating. Similarly, we wish to 
+assess test for this change on hole nine at Oakmont. Mathematically, the 
+expected difference on hole two at Pebble Beach under this model formulation is
+written as
+\begin{equation}
+  E\{Y_{12k} - Y_{22k}\} = \alpha_1 - \alpha_2 + (\alpha\beta)_{12}-(\alpha\beta)_{22}.
+  (\#eq:h1)
+\end{equation} 
+This is the statistical representation of our research 
+hypothesis, H1.
+
+It should be noted that we treat each golfer's scores as
+independent within each tournament as well as across years at the same 
+(or different) tournament(s). To be more precise in this description, 
+consider the scores on holes one and two at the 1992 US Open for its 
+champion, Tom Kite. Kite recorded scores of 4, 4, 4, and 3, and 4, 5, 4, and 5 
+on the first and second holes in 1992 at Pebble Beach when he won the 
+tournament. Each of these observations are treated as independent of the 
+others. In addition, Kite's scores of 5, 4, 5, and 4 (hole 1) and 5, 4, 5, 
+and 5 (hole two) in 2000 when he finished in thirty-second place are independent
+of those 1992 scores. In other words, *all* scores are independent both 
+within year and across years.Given that we are treating 
+each course independently, Kite's scores at Oakmont in 1994 are necessarily
+independent from his Pebble Beach scores given the two separate models. Note 
+that Tom Kite did not participate in the 2007 US Open at Oakmont.
+
+We initially included player-specific random intercepts within year, however, 
+the fact that so many golfers will have recorded the same scores in a given 
+year, such an effect would be rendered meaningless. In fact, standard model 
+selection tools such as the Bayesian Information Criterion (BIC) and the Akaike
+Information Criterion (AIC) recommend omitting the random effect terms.
+
+# Results
+
+In this section, we describe the results related to our main hypothesis of 
+interest, as well as several ancillary findings. The results related to Pebble
+Beach are presented first, followed by those of Oakmont. All of the analysis in
+this manuscript was performed using the R Software [@rsoftware]
+and is available upon request in a fully reproducible format.
+
+## Pebble Beach Results
+
+The overall $F$ test associated with fitting the model defined in Equation
+\eqref{eq:statmod} to the Pebble Beach data is 316.53 ($p < 0.0001$ on 35 
+and 15,786 degrees of freedom in the numerator and denominator, 
+respectively) is highly significant. Furthermore, the $F$ test related to the 
+interaction term is 5.13 ($p < 0.0001$, on 17 and 15,786 df) is as well. Given 
+that the holes have different par ratings (3, 4, and 5), these results are 
+expected. However, they do lend evidence to support a deeper 
+investigation into the hole by year interactions. The two-way ANOVA table 
+for the Pebble Beach data are given on the left side of Table \ref{tab:anova}.
+
+```{r}
+options(knitr.kable.NA = ' ')
+tmp <- tidy(anova(lm_pebble))[, c(1, 2, 4, 5, 6)] %>% 
+  bind_cols(tidy(anova(lm_oakmont))[, c(2, 4, 5, 6)])
+tmp$term[1:3] <- c("Hole", "Year", "Hole*Year")
+colnames(tmp)[1:9] <- c("", "DF", "SS", "F Stat.", "P-value", "DF", "SS", "F Stat.", "P-value")
+kable(tmp, "latex", booktabs = T, digits = 3, linesep = "", escape = F, caption = "\\label{tab:anova} The estimated two-way layout ANOVA models for the data at each course under study.") %>%
+  add_header_above(c("", "Pebble Beach" = 4, "Oakmont" = 4), italic = T) %>%
+  kable_styling(latex_options = "striped") %>% 
+  column_spec(1, border_right = T, bold = T) %>% 
+  column_spec(5, border_right = T)
+# tmp <- tidy(anova(lm_pebble)) %>% 
+#   bind_cols(tidy(anova(lm_oakmont))[, -1])
+# tmp$term[1:3] <- c("Hole", "Year", "Hole*Year")
+# # colnames(tmp)[1:5] <- c("", "DF", "SS", "MS", "F", "P-value")
+# kable(tmp, "latex", booktabs = T, digits = 3, linesep = "", escape = F, caption = "\\label{tab:anova-pebble} The two-way layout ANOVA.\\newline") %>%
+#   kable_styling(latex_options = "striped")
+```
+
+The fitted values, or estimated average scores at Pebble Beach by hold and 
+year, are displayed in Figure \@ref(fig:pebble-y-hat). It 
+is immediately obvious that there are differences in average scores across the 
+different hole/year combinations. Hypothesis H1, however, is 
+concerned with hole two at Pebble Beach specifically. That is, are the average 
+scores on hole two when it played as a par 4 (2000) lower than when it played 
+as a par 5 (1992).
+
+The one-sided $t$ test associated with the contrast defined in Equation 
+\eqref{eq:h1} for Pebble Beach yields an estimate of 0.23 ($p < 0.0001$, 
+standard error = 0.05). In other words, the data suggest that the average score
+on hole two at Pebble Beach in the 1992 US Open is signficantly greater than 
+during the 2000 US Open. To visualize the actual effect size on hole two 
+along with the those of the seventeen additional holes, see Figure 
+\@ref(fig:pebble-effect-size). From this analysis, we 
+estimate that loss aversion affect size on hole number two at Pebble Beach
+is between 0.13 and 0.32 strokes at the 95\% signficance level. In other words, 
+this analysis shows that a professional golfer will score (on average) between
+0.13 and 0.32 strokes lower when hole two plays as a par four relative to 
+when it plays as a par five. Note that none of the other
+holes played significantly easier during the 2000 US Open. The significant
+loss averse behavior seems to manifest on hole two due to the change in the 
+hole's par rating. See Table \ref{tab:contrasts} for a 
+summary of the effect sizes across all holes at Pebble Beach.
+
+```{r}
+options(knitr.kable.NA = ' ')
+tmp <- pebble_glht_df[, c(1, 7, 2, 3)] %>% 
+  bind_cols(oakmont_glht_df[, c(7, 2, 3)])
+# tmp$`par...2`[2] <- cell_spec(tmp$`par...2`[2], bold = T)
+# tmp$`coef...3`[2] <- cell_spec(tmp$`coef...3`[2], bold = T)
+# tmp$`sigma...4`[2] <- cell_spec(tmp$`sigma...4`[2], bold = T)
+colnames(tmp)[1:7] <- c("Hole", "Par", "Coef.", "Std. Err.", "Par", "Coef.", "Std. Err.")
+kable(tmp, "latex", booktabs = T, digits = 3, linesep = "", escape = F, caption = "\\label{tab:contrasts} The before changing par minus after changing par effect sizes for each hole on each golf course. Recall that only hole two and hole nine actually changed par at Pebble Beach and Oakmont, respectively. Note that positive values indicate that the hole played easier in the latter tournaments (2000 at Pebble Beach and 2007 at Oakmont). The estimated coefficients and standard errors are found using the constrast defined in Equation (2) and general linear hypothesis testing theory. Note that hole five at Pebble Beach was substantially redesigned prior to 2000 and, as a result, played significantly more difficult than its 1992 version.") %>%
+  add_header_above(c("", "Pebble Beach" = 3, "Oakmont" = 3), italic = T) %>%
+  kable_styling(latex_options = "striped") %>% 
+  column_spec(1, border_right = T, bold = T) %>% 
+  column_spec(4, border_right = T)
+```
+
+## Oakmont Results
+
+We performed a similar analysis on the data from Oakmont Country Club's US
+Opens in 1994 and 2007, with particular attention being paid to hole nine. 
+Similar to hole two at Pebble Beach, Oakmont's number nine was changed from a par
+5 to a par 4 prior to the 2007 US Open tournament. The overall $F$ test 
+associated with fitting the model defined in Equation
+\eqref{eq:statmod} to the Oakmont data is 292.92 ($p < 0.0001$ on 35 
+and 15,852 degrees of freedom) is highly significant as well. Furthermore, 
+the $F$ test related to the interation term is 3.54 ($p < 0.0001$, on 17 and 15,786 
+df). See the right-hand side of Table \ref{tab:anova} for a summary of the 
+two-way ANOVA results. The individual hole/year fitted values are displayed in
+Figure \@ref(fig:oakmont-y-hat).
+
+Diving deeper into the test for loss averse behavior Oakmont's hole nine, we 
+apply the test associated with the contrast defined in Equation 
+\eqref{eq:h1}. The one-sided test in this case results in a point estimate
+of 0.13 ($p = 0.004$, standard error $= 0.05$). Similar to the results given 
+above for Pebble Beach, hole nine at Oakmont is the only hole on the course that
+played signifcantly easier in 2007 than it did in 1994. The individual 
+hole-specific effect sizes are plotted in Figure \@ref(fig:oak-effect-size). 
+Although
+the effect size is not as great at Oakmont as it was at Pebble Beach, the 
+analysis does show that a professional golfer will take (on average) between
+0.03 and 0.22 fewer strokes to complete hole nine when it plays as a par 
+4 relative to when it is rated a par 5 The raw effect sizes are given
+in Table \ref{tab:contrasts}.
+
+## Ancillary Results
+
+As mentioned in Section 2, a total of 46 golfers played in both US Open 
+tournaments at Pebble Beach and 14 played in both US Opens at Oakmont. This
+equates to 29.5\% and 9.0\% of the golfers playing in the 2000 and 2007 
+tournaments, respectively. Therefore, we thought it prudent to examine the 
+scores on hole two at Pebble and hold nine at Oakmont during the latter 
+tournaments held at each course. In particular, we examine the scores for the
+two distinct cohorts of players: those players who played in the previous tournament 
+versus those who did not.
+
+The relative frequency of scores on hole two at Pebble Beach and hole nine at 
+Oakmont are displayed in Figures \@ref(fig:pb-two-cohorts) and 
+\@ref(fig:oak-two-cohorts). It appears that at both courses 
+tournaments,  players who played both tournaments (1992 and 2000 at Pebble 
+Beach and 1994 and 2007 at Oakmont) scored slightly higher on the two holes 
+under study. Neither difference between the two groups at each course is 
+statistically significant based on using Welch's two sample T tests ($p = 0.73$ 
+at Pebble Beach and $p = 0.62$ at Oakmont).
+
+At an initial glance, these results might seem surprising. 
+Upon closer inspection, however, there is almost certainly a degradation of 
+skillsets over time that might attenuate any expected, pronounced loss averse 
+effect for players who played in both tournaments. Indeed, the winner at the 
+US Open in 1992, Tom Kite, was ranked 22 according to the Official World Golf 
+Rankings (OWGR) in the week prior to that tournament, but by the 2000 US Open 
+he was not ranked in the OWGR Top 200.
+
+# Conclusion and Discussion
+
+The results presented in this manuscript provide compelling evidence that a
+loss averse behavior exists among professional golf players. In particular,
+this behavior manifests when a golf hole is changed from a par rating of par 5
+to a par 4 in a US Open tournament, without fundamentally changing the hole's
+character. 
+
+In this study, we analyzed data from two particular US Open courses: Pebble
+Beach Golf Links and Oakmont Country Club. Both courses changed a single hole
+(hole two at Pebble Beach and hole nine at Oakmont) from a par 5 to a par 4
+without materially altering the makeup of the hole itself. Therefore, the USGA
+unintentionally created a natural experiment in which we could quantify the
+affect of this change in a loss aversion context. The results support prospect
+theory [@kahneman1979prospect].
+
+One might be tempted to argue that the technological advances in the game (ball,
+club, etc.) and/or player improvements (e.g., fitness) over time are responsible 
+for the observed decreases in scoring. While it is certainly true that players today
+are hitting the ball longer and straighter than ever before, there is still a
+noticeable, statistically significant decrease on the holes in question (hole two 
+at Pebble Beach and hole nine at Oakmont) following the change in par. We
+attribute this decrease on those holes to loss aversion. As we have shown, there 
+is a decrease in average scoring on holes number two at Pebble Beach and
+number nine at Oakmont that is markedly different from any changes on the other
+seventeen holes on each course (see Figures \@ref(fig:pebble-effect-size) and 
+\@ref(fig:oak-effect-size)). No hole on either course shows a consistent 
+decrease in scoring average after the changes were implemented when they kept a 
+consistent par rating and, in fact, several holes played harder. We would expect 
+a similar decrease over all holes if the results were simply due to better golfing 
+technology.
+
+It is possible that factors other than length could go towards making a hole
+more or less difficult. For example, there can be holes that turn from tee to
+green ("dog legs") rather than being relatively straight from tee to green, or 
+even incorporate hazards such as sand, water, trees, or tall grass. It does not 
+appear that the holes considered here were altered in any way to change the 
+positions or amounts of hazards. Furthermore, a hole can become more or less 
+difficult from day to day depending on where on the green the hole was actually 
+positioned. Holes cut in the middle of the green are considered to be easier to 
+play than those cut near the edges or potentially near sand traps or water. The 
+USGA tries to spread this out by identifying five different pin positions for each
+green, so that they can rotate the wear on the greens as the players play the 
+course on four consecutive days (and, up until 2018, potentially a playoff on a 
+fifth day). This leads to some easier pin positions and some more difficult ones, 
+and as a consequence should lead to variance evening out about the pin positions.
+
+Another possible factor could be that the weather was much worse in the years
+when the holes were rated as par 5s than par 4s, which would lead to higher
+scores. If this were the case, however, we should see higher scores on the other
+seventeen holes as well. We do not expect the weather to be
+appreciably different over the five or so acres that make up the holes in
+question, relative to the other seventeen holes on the course. Indeed, we could 
+not identify a consistent factor making one year an outlier that might indicate
+several days of bad weather.
+
+Finally, we should mention how future US Opens, or golf tournaments in general,
+might be able to utilize the results of this study. Organizers could choose to
+change short par 5s to par 4s in order to protect par. The expected result would
+be more pars and bogeys, but the overall golf should be played at a higher
+level. As a specific example, the 2020 US Open Golf Championship is scheduled to be
+played at Winged Foot Golf Club (West Course) in Mamaroneck, New York. The
+fifth hole at Winged Foot is a 515 yard par 5. In other words, the hole is a
+relatively short par 5 by professional golfing standards. If it were changed 
+from a par 5 to a par 4, we might expect a statistically significant decrease 
+in average scores on that hole during the tournament.
+
+\section*{Acknowledgements}
+
+The authors would like to acknowledge Victoria Student, Senior Historian at the
+United States Golf Association, for providing the data used in this study. In
+addition, we would like to thank Professor Amy Finkelstein and several anonymous
+referees for their suggestions on improving earlier versions of this manuscript.
+
+<div id="refs"></div>
+
+\newpage
+
+```{r bar-charts-pb, fig.width = 6.5, fig.cap = "The relative frequency of scores on Pebble Beach Golf Links' second hole by round. The black bars are relative frequencies for tournaments prior to 2000 and the grey bars are relative frequencies for the 2000 and 2010 tournaments."}
+p <- ggplot(data = df %>%
+              filter(hole_number == 2,
+                     sum_of_strokes < 9,
+                     round_number < 5, 
+                     year %in% c(1992, 2000)) %>%
+              mutate(year_ind = if_else(year < 2000, "< 2000", "≥ 2000"),
+                     round = factor(round_number, labels = c("round 1",
+                                                             "round 2",
+                                                             "round 3",
+                                                             "round 4"))),
+            aes(sum_of_strokes))
+p + geom_bar(aes(fill = as.factor(year),
+                 y = ..prop..),
+             position = position_dodge(preserve = "single"),
+             stat = "count",
+             col = "black") +
+  facet_wrap(~ round) +
+  scale_fill_grey("") +
+  scale_x_continuous(breaks = 3:8, labels = 3:8) +
+  scale_y_continuous(labels = scales::percent,
+                     breaks = seq(0, 0.6, by = .1)) +
+  xlab("strokes") +
+  ylab("relative frequency") +
+  theme_bw()
+```
+
+```{r bar-charts-oakmont, fig.width = 6.5, fig.cap = "The relative frequency of scores on Oakmont Country Club's ninth hole by round. The black bars are relative frequencies for tournaments prior to 2007 and the grey bars are relative frequencies for the 2007 and 2016 tournments."}
+p <- ggplot(data = df_oak %>%
+              filter(hole_number == 9,
+                     sum_of_strokes < 9,
+                     round_number < 5,
+                     year %in% c(1994, 2007)) %>%
+              mutate(year_ind = if_else(year < 2007, "< 2007", "≥ 2007"),
+                     round = factor(round_number, labels = c("round 1",
+                                                             "round 2",
+                                                             "round 3",
+                                                             "round 4"))),
+            aes(sum_of_strokes))
+p + geom_bar(aes(fill = as.factor(year),
+                 y = ..prop..),
+             position = position_dodge(preserve = "single"),
+             stat = "count",
+             col = "black") +
+  facet_wrap(~ round) +
+  scale_fill_grey("") +
+  scale_x_continuous(breaks = 3:8, labels = 3:8) +
+  scale_y_continuous(labels = scales::percent,
+                     breaks = seq(0, 0.6, by = .1)) +
+  xlab("strokes") +
+  ylab("relative frequency") +
+  theme_bw()
+```
+
+```{r pebble-y-hat, fig.width = 7, fig.height = 4, fig.cap = "The estimated fitted values of the model defined in Equation (1) using the data from Pebble Beach. Note that hole five at Pebble Beach was substantially redesigned prior to 2000 and, as a result, played significantly more difficult than its 1992 version."}
+p <- ggplot(res, 
+            aes(x = hole_number, 
+                y = sum_of_strokes, 
+                color = year_ind)) 
+
+p + geom_errorbar(aes(ymin = sum_of_strokes - 2*se, 
+                    ymax = sum_of_strokes + 2*se), 
+                width = .2, size = 0.7, position = position_dodge(.2)) +
+  geom_point(shape = 15, size = 4, position = position_dodge(.2)) +
+  theme_bw() +
+  labs(x = "hole number",
+       y = "sum of strokes") +
+  scale_color_manual("", labels = c("2000", "1992"),
+                     values = c("#bdbdbd", "#636363")) 
+```
+
+```{r pebble-effect-size, fig.width = 7, fig.height = 4, fig.cap = "The effect sizes for each hole at Pebble Beach, as estimated using Equation (2). The raw values are given in Table (2). Note that hole five at Pebble Beach was substantially redesigned prior to 2000 and, as a result, played significantly more difficult than its 1992 version."}
+p <- ggplot(data = pebble_glht_df,
+            aes(x = reorder(as.factor(hole), coef), y = coef,
+                col = as.factor(par),
+                shape = as.factor(par)))
+p + geom_point() +
+  geom_errorbar(aes(ymin = lower,
+                    ymax = upper)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_color_brewer("par", palette = "Set2") +
+  scale_shape("par") +
+  labs(y = "average sum of strokes (before - after change)",
+       x = "hole") +
+  scale_y_continuous(limits = c(-.4, .4),
+                     labels = seq(-.4, .4, by = .2)) +
+  theme_bw()
+```
+
+```{r oakmont-y-hat, fig.width = 7, fig.height = 4, fig.cap = "The estimated fitted values of the model defined in Equation (1) using the data from Oakmont."}
+p <- ggplot(res_oak, 
+            aes(x = hole_number, 
+                y = sum_of_strokes, 
+                color = year_ind)) 
+
+p + geom_errorbar(aes(ymin = sum_of_strokes - 2*se, 
+                    ymax = sum_of_strokes + 2*se), 
+                width = .2, size = 0.7, position = position_dodge(.2)) +
+  geom_point(shape = 15, size = 4, position = position_dodge(.2)) +
+  theme_bw() +
+  labs(x = "hole number",
+       y = "sum of strokes") +
+  scale_color_manual("", labels = c("2007", "1994"),
+                     values = c("#bdbdbd", "#636363"))
+```
+
+```{r oak-effect-size, fig.width = 7, fig.height = 4, fig.cap = "The effect sizes for each hole at Oakmont, as estimated using Equation (2). The raw values are given in Table (2)."}
+p <- ggplot(data = oakmont_glht_df,
+            aes(x = reorder(as.factor(hole), coef), y = coef,
+                col = as.factor(par),
+                shape = as.factor(par)))
+p + geom_point() +
+  geom_errorbar(aes(ymin = lower,
+                    ymax = upper)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  scale_color_brewer("par", palette = "Set2") +
+  scale_shape("par") +
+  labs(y = "average sum of strokes (before - after change)",
+       x = "hole") +
+  scale_y_continuous(limits = c(-.4, .4),
+                     labels = seq(-.4, .4, by = .2)) +
+  theme_bw()
+```
+
+```{r, include = F}
+peb_1992 <- filter(peb_reg_df, year == 1992)
+peb_2000 <- filter(peb_reg_df, year == 2000)
+
+oak_1994 <- filter(oak_reg_df, year == 1994)
+oak_2007 <- filter(oak_reg_df, year == 2007)
+players <- unique(peb_1992$player)[unique(peb_1992$player) 
+                                   %in% unique(peb_2000$player)]
+peb_reg_df_2 <- peb_reg_df %>% 
+  mutate(both = if_else(player %in% players, TRUE, FALSE))
+```
+
+```{r pb-two-cohorts, fig.width = 6.5, fig.cap = "The relative frequency of raw scores for players who played in both tournaments at Pebble Beach (gray) versus those who did not (black)."}
+p <- ggplot(data = peb_reg_df_2 %>%
+              filter(hole_number == 2),
+            aes(x = sum_of_strokes))
+
+p + geom_bar(aes(fill = both,
+                 y = ..prop..),
+             position = position_dodge(preserve = "single"),
+             col = "black") +
+  scale_fill_grey("", labels = c("1992", "1992/2000")) +
+  scale_x_continuous(breaks = 3:8, labels = 3:8) +
+  scale_y_continuous(labels = scales::percent,
+                     breaks = seq(0, 0.5, by = .1)) +
+  xlab("strokes") +
+  ylab("relative frequency") +
+  theme_bw()
+```
+
+```{r, include = F}
+players <- unique(oak_1994$player)[unique(oak_1994$player) 
+                                   %in% unique(oak_2007$player)]
+oak_reg_df_2 <- oak_reg_df %>% 
+  mutate(both = if_else(player %in% players, TRUE, FALSE))
+```
+
+```{r oak-two-cohorts, fig.width = 6.5, fig.cap = "The relative frequency of raw scores for players who played in both tournaments at Oakmont (gray) versus those who did not (black)."}
+p <- ggplot(data = oak_reg_df_2 %>%
+              filter(hole_number == 9),
+            aes(x = sum_of_strokes))
+
+p + geom_bar(aes(fill = both,
+                 y = ..prop..),
+             position = position_dodge(preserve = "single"),
+             col = "black") +
+  scale_fill_grey("", labels = c("1994", "1994/2007")) +
+  scale_x_continuous(breaks = 3:8, labels = 3:8) +
+  scale_y_continuous(labels = scales::percent,
+                     breaks = seq(0, 0.5, by = .1)) +
+  xlab("strokes") +
+  ylab("relative frequency") +
+  theme_bw()
+```
